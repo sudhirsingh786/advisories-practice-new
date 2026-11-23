@@ -1,0 +1,3 @@
+# InfoSec must approve every change to the advisory site
+/infosec-advisory/ @company/infosec-team
+/.github/workflows/publish-advisories.yml @company/infosec-team

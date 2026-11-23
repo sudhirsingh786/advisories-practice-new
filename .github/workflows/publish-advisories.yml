@@ -1,0 +1,53 @@
+# Publishes the InfoSec advisory site (infosec-advisory/ folder) to GitHub Pages.
+# Runs ONLY when something inside infosec-advisory/ or this workflow file changes on main.
+# Commits to any other folder in this repo (KQL queries, scripts, etc.) do not trigger it.
+# Only the built _site folder is published; the rest of the repo is never put on Pages.
+# Nothing is downloaded during the build: build.py uses only the Python standard library.
+# Every action is pinned to a full commit SHA (release tag in the comment).
+name: Publish advisories
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infosec-advisory/**"
+      - ".github/workflows/publish-advisories.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # full history, so Published/Updated dates come from Git
+      - name: Build site (standard library only)
+        run: python3 infosec-advisory/tools/build.py infosec-advisory/advisories _site
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1
