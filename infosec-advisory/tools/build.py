@@ -34,6 +34,7 @@ Tracked deletions and comments are ignored; images are dropped.
 All text is HTML-escaped, and only https:// and relative links are kept.
 """
 import datetime
+import difflib
 import html
 import pathlib
 import re
@@ -47,6 +48,7 @@ ALLOWED_LINK = re.compile(r"^(https://|\./|\.\./|#|[A-Za-z0-9_\-]+\.html)", re.I
 CVE_ID = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
 CSP = ("default-src 'none'; style-src 'self'; img-src 'self'; "
        "base-uri 'none'; form-action 'none'")
+TEMPLATE_HINT = re.compile(r"^\s*(How to use:|Free section\.)", re.I)
 STAGES = ["Identify", "Prioritize", "Remediate", "Monitor", "Closed"]
 SEVERITIES = ["Critical", "High", "Medium", "Low"]
 META_LABELS = {
@@ -126,6 +128,54 @@ def norm_choice(value, choices, default):
     return v or default
 
 
+SEVERITY_WORDS = {"critical": "Critical", "crit": "Critical", "high": "High", "important": "High",
+                  "medium": "Medium", "med": "Medium", "moderate": "Medium", "low": "Low"}
+STAGE_WORDS = {"identify": "Identify", "identification": "Identify", "identified": "Identify",
+               "prioritize": "Prioritize", "prioritise": "Prioritize", "prioritization": "Prioritize",
+               "prioritisation": "Prioritize", "priority": "Prioritize", "triage": "Prioritize",
+               "remediate": "Remediate", "remediation": "Remediate", "remediating": "Remediate",
+               "fix": "Remediate", "fixing": "Remediate", "patching": "Remediate",
+               "monitor": "Monitor", "monitoring": "Monitor", "verify": "Monitor", "verification": "Monitor",
+               "closed": "Closed", "close": "Closed", "done": "Closed", "resolved": "Closed", "complete": "Closed",
+               "completed": "Closed"}
+
+
+def is_placeholder(value):
+    """Untouched template text such as <Critical / High / Medium / Low>."""
+    v = (value or "").strip()
+    return (v.startswith("<") and v.endswith(">")) or v.count("/") >= 2
+
+
+def fuzzy_pick(value, words):
+    """Map free text to a known value: exact word, then close spelling. Returns (value, guessed)."""
+    if is_placeholder(value):
+        return "", False
+    tokens = re.findall(r"[a-z]+", (value or "").lower())
+    for tok in tokens:
+        if tok in words:
+            return words[tok], False
+    for tok in tokens:
+        if len(tok) >= 3:
+            close = difflib.get_close_matches(tok, list(words), n=1, cutoff=0.75)
+            if close:
+                return words[close[0]], True
+    return "", False
+
+
+def norm_severity(value):
+    """Critical/High/Medium/Low from words, typos (Crickal) or a CVSS score (9.8). Returns (value, guessed)."""
+    sev, guessed = fuzzy_pick(value, SEVERITY_WORDS)
+    if sev:
+        return sev, guessed
+    scores = [float(x) for x in re.findall(r"(?<![\w.])(10(?:\.0)?|\d(?:\.\d)?)(?![\d.])", value or "")]
+    if scores:
+        n = max(scores)  # "CVSS 3.1 7.5" -> 7.5
+        band = "Critical" if n >= 9 else "High" if n >= 7 else "Medium" if n >= 4 else "Low" if n > 0 else ""
+        if band:
+            return band, True
+    return "", False
+
+
 def git_dates(path):
     """(first commit date, last commit date) of a file, or ("", "") without Git history."""
     try:
@@ -157,17 +207,23 @@ def finish_meta(meta, path, first_text=""):
         meta["name"] = meta.get("_title") or file_id
         warn(path, "no name given; showing '%s'" % meta["name"])
 
-    sev = norm_choice(meta.get("severity"), SEVERITIES, "")
-    if sev not in SEVERITIES:
-        warn(path, "severity '%s' not recognised; showing 'Unknown'" % (meta.get("severity") or ""))
+    raw_sev = (meta.get("severity") or "").strip()
+    sev, guessed = norm_severity(raw_sev)
+    if not sev:
+        warn(path, "severity '%s' not recognised; showing 'Unknown'" % raw_sev)
         sev = "Unknown"
+    elif guessed:
+        warn(path, "severity '%s' read as '%s'" % (raw_sev, sev))
     meta["severity"] = sev
 
-    st = norm_choice(meta.get("status"), STAGES, "")
-    if st not in STAGES:
-        if meta.get("status"):
-            warn(path, "stage '%s' not recognised; showing 'Identify'" % meta.get("status"))
+    raw_st = (meta.get("status") or "").strip()
+    st, guessed = fuzzy_pick(raw_st, STAGE_WORDS)
+    if not st:
+        if raw_st:
+            warn(path, "stage '%s' not recognised; showing 'Identify'" % raw_st)
         st = "Identify"
+    elif guessed:
+        warn(path, "stage '%s' read as '%s'" % (raw_st, st))
     meta["status"] = st
 
     first, last = git_dates(path)
@@ -729,6 +785,8 @@ class Docx:
                     continue
             if el.tag == W + "p":
                 style, numbered, _, _, pieces, text = self.para_info(el)
+                if TEMPLATE_HINT.match(text or ""):
+                    continue  # grey "How to use" / "Free section" hints from the template
                 if not title and text and (style == "title" or (
                         re.search(r"heading\s*1", style) and CVE_ID.search(text))):
                     title = text
