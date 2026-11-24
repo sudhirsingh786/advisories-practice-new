@@ -204,7 +204,10 @@ def finish_meta(meta, path, first_text=""):
     meta["name"] = (meta.get("name") or "").strip().strip("\"'")
     meta["name"] = re.sub(r"^\s*%s\s*[-:–—]*\s*" % re.escape(file_id), "", meta["name"], flags=re.I)
     if not meta["name"] or "<" in meta["name"]:
-        meta["name"] = meta.get("_title") or file_id
+        cand = meta.get("_title") or ""
+        if section_title(cand) or "<" in cand:
+            cand = ""  # a section heading such as "What you need to do" is not a name
+        meta["name"] = cand or file_id
         warn(path, "no name given; showing '%s'" % meta["name"])
 
     raw_sev = (meta.get("severity") or "").strip()
